@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>vca-parser テスト</title>
+<style>
+  :root { --bg:#fff; --ink:#1c2230; --ok:#067647; --ng:#b42318; --muted:#667085; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111418; --ink:#e6e9ef; --ok:#47cd89; --ng:#f97066; --muted:#98a2b3; } }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--ink); font:14px/1.6 system-ui, "Segoe UI", "Yu Gothic UI", sans-serif; }
+  h1 { font-size:18px; margin:0 0 8px; }
+  li { list-style:none; }
+  .ok::before { content:"✓ "; color:var(--ok); font-weight:700; }
+  .ng::before { content:"✗ "; color:var(--ng); font-weight:700; }
+  .ng { color:var(--ng); }
+  #summary { font-weight:700; margin-bottom:8px; }
+  code { color:var(--muted); }
+</style>
+</head>
+<body>
+<h1>vca-parser.js テスト</h1>
+<p>このファイルをブラウザで開くとテストが実行されます（Node.js 不要）。</p>
+<div id="summary"></div>
+<ul id="list"></ul>
+<script src="../src/vca-parser.js"></script>
+<script>
+const results = [];
+function test(name, fn) {
+  try { fn(); results.push({ name, ok: true }); }
+  catch (e) { results.push({ name, ok: false, msg: e.message }); }
+}
+function eq(a, b, what) {
+  const sa = JSON.stringify(a), sb = JSON.stringify(b);
+  if (sa !== sb) throw new Error(`${what || '値'}: 期待 ${sb} / 実際 ${sa}`);
+}
+function ok(v, what) { if (!v) throw new Error(what || '条件が偽'); }
+const CRLF = '\r\n';
+
+// ---- CRC・パケット --------------------------------------------------------
+test('CRC-16: "Hello World!" は 0x0CD3', () => eq(VCA.crc16('Hello World!'), 0x0cd3));
+
+test('パケットの組み立てと CRC 検証', () => {
+  const pkt = VCA.buildPacket([['REQ', 'TRC'], ['JOB', '1001']], { crc: true });
+  ok(pkt.startsWith('\x1c') && pkt.endsWith('\x1d'), 'FS で始まり GS で終わる');
+  const p = VCA.parsePacket(pkt);
+  eq(p.crcOk, true, 'CRC');
+  eq(p.records.map(r => r.label), ['REQ', 'JOB'], 'レコード順');
+  const broken = pkt.replace('1001', '1002');
+  eq(VCA.parsePacket(broken).crcOk, false, '改ざん時の CRC');
+});
+
+test('CRC レコードが無いパケットは crcOk = null', () => {
+  eq(VCA.parsePacket(VCA.buildPacket([['REQ', 'INI']])).crcOk, null);
+});
+
+// ---- レコード --------------------------------------------------------------
+test('左右レコードの取り出し（片眼のみ・単一値・不明値）', () => {
+  const d = VCA.parse(['SPH=;-2.75', 'DBL=18.0', 'IPD=?;31.0', 'CYL=-0.50;-0.75'].join(CRLF));
+  eq(VCA.sideNumber(d.rec.SPH, 'R'), undefined, 'SPH 右');
+  eq(VCA.sideNumber(d.rec.SPH, 'L'), -2.75, 'SPH 左');
+  eq(VCA.sideNumber(d.rec.DBL, 'L'), 18, 'DBL（単一値は両眼）');
+  eq(VCA.sideNumber(d.rec.IPD, 'R'), undefined, 'IPD 右（?）');
+  eq(VCA.sideNumber(d.rec.CYL, 'L'), -0.75, 'CYL 左');
+});
+
+test('"_" で始まるラベル・引用符付きの値・未知のラベル', () => {
+  const d = VCA.parse(['_MYTEST=abc', 'JOB="A-123"', 'ZZTOP=1'].join(CRLF));
+  eq(d.rec._MYTEST, ['abc']);
+  eq(d.rec.JOB, ['A-123']);
+  eq(d.rec.ZZTOP, ['1'], '未知のラベルも保持（利用側で無視）');
+});
+
+// ---- トレース（形式 1） ------------------------------------------------------
+const radii8 = [2500, 2400, 2000, 2400, 2500, 2400, 2000, 2400];
+
+test('TRCFMT=0 はトレースなし', () => {
+  const d = VCA.parse('TRCFMT=0');
+  eq(d.traces.length, 0); ok(d.warnings.length === 1, '警告 1 件');
+});
+
+test('形式 1・等角度', () => {
+  const d = VCA.parse(['TRCFMT=1;8;E;R;F', 'R=' + radii8.join(';')].join(CRLF));
+  const t = d.traces[0];
+  eq(t.radii, radii8); eq(t.equi, true); eq(t.kind, 'F');
+  const p = VCA.tracePoints(t);
+  eq(p[2].a, 90, '3 点目の角度'); eq(+p[2].y.toFixed(6), 20, '3 点目の y');
+});
+
+test('形式 1・不等角度（U）と A レコード', () => {
+  const ang = [0, 4000, 9000, 14000, 18000, 22000, 27000, 32000];
+  const d = VCA.parse(['TRCFMT=1;8;U;L;P', 'R=' + radii8.join(';'), 'A=' + ang.join(';')].join(CRLF));
+  const t = d.traces[0];
+  eq(t.angles, ang); eq(t.eye, 'L'); eq(d.errors, []);
+  eq(VCA.tracePoints(t)[1].a, 40);
+});
+
+test('角度モード C（角度が戻ってもよい）は順序を保つ', () => {
+  const ang = [0, 9000, 8000, 18000, 27000, 26000, 30000, 35000];
+  const d = VCA.parse(['TRCFMT=1;8;C;R;F', 'R=' + radii8.join(';'), 'A=' + ang.join(';')].join(CRLF));
+  eq(d.traces[0].equi, false);
+  eq(VCA.tracePoints(d.traces[0]).map(p => p.a), ang.map(a => a / 100));
+});
+
+test('ZFMT / Z / ZA は R に混ざらない', () => {
+  const d = VCA.parse(['TRCFMT=1;8;E;R;F', 'R=' + radii8.join(';'), 'ZFMT=1;8;E;R;F',
+                       'Z=10;20;30;40;50;60;70;80'].join(CRLF));
+  eq(d.traces[0].radii, radii8); eq(d.traces[0].sag.values.length, 8);
+});
+
+test('両眼データ（2 つの TRCFMT）', () => {
+  const d = VCA.parse(['TRCFMT=1;8;E;R;F', 'R=' + radii8.join(';'),
+                       'TRCFMT=1;8;E;L;F', 'R=' + radii8.join(';')].join(CRLF));
+  eq(d.traces.map(t => t.eye), ['R', 'L']);
+});
+
+test('左右反転：右眼データの 0°（鼻側）は左眼の向きで 180°', () => {
+  const d = VCA.parse(['TRCFMT=1;8;E;R;F', 'R=' + radii8.join(';')].join(CRLF));
+  const asL = VCA.tracePoints(d.traces[0], 'L');
+  const p = asL.find(q => q.r === 25 && Math.abs(q.a - 180) < 1e-9);
+  ok(p, '180° に半径 25 mm の点がある');
+});
+
+test('点数の不一致は警告', () => {
+  const d = VCA.parse(['TRCFMT=1;10;E;R;F', 'R=' + radii8.join(';')].join(CRLF));
+  ok(d.warnings.some(w => w.includes('一致しません')));
+});
+
+// ---- バイナリ形式 ----------------------------------------------------------
+test('エスケープ：全 256 バイトで往復一致', () => {
+  let s = ''; for (let i = 0; i < 256; i++) s += String.fromCharCode(i);
+  const e = VCA.escapeBinary(s);
+  ok(!/[\x1c\x1d\x1e\x0d\x0a]/.test(e), '予約制御文字が残っていない');
+  eq(VCA.unescapeBinary(e), s);
+});
+
+function binaryFile(fmt, radii, angles, mode) {
+  let t = `TRCFMT=${fmt};${radii.length};${mode || 'E'};R;F` + CRLF +
+          'R=' + VCA.escapeBinary(VCA.encodeBinary(fmt, radii)) + CRLF;
+  if (angles) t += 'A=' + VCA.escapeBinary(VCA.encodeBinary(fmt, angles)) + CRLF;
+  return t;
+}
+// 下位バイトが LF（0x0A）や FS（0x1C）になる値、大きな差分、減少を含む
+const tricky = [2570, 2572, 2600, 2300, 2810, 7180, 2588, 2475, 2475, 2602];
+
+test('形式 2（バイナリ絶対値）の往復', () => {
+  eq(VCA.parse(binaryFile(2, tricky)).traces[0].radii, tricky);
+});
+
+test('形式 3（バイナリ差分）の往復', () => {
+  eq(VCA.parse(binaryFile(3, tricky)).traces[0].radii, tricky);
+});
+
+test('形式 2・不等角度：35999 までの角度を扱える', () => {
+  const ang = [0, 3000, 9000, 15000, 20000, 25000, 30000, 33000, 35000, 35999];
+  const t = VCA.parse(binaryFile(2, tricky, ang, 'U')).traces[0];
+  eq(t.angles, ang);
+});
+
+test('形式 4（パックト）は未対応としてエラー', () => {
+  const d = VCA.parse(['TRCFMT=4;8;E;R;F', 'R=\x01\x02'].join(CRLF));
+  ok(d.errors.some(e => e.includes('形式4')));
+});
+
+// ---- 表示 ------------------------------------------------------------------
+const pass = results.filter(r => r.ok).length;
+document.getElementById('summary').textContent = `${pass} / ${results.length} 件成功`;
+document.getElementById('list').innerHTML = results.map(r =>
+  `<li class="${r.ok ? 'ok' : 'ng'}">${r.name}${r.ok ? '' : ` <code>${r.msg}</code>`}</li>`).join('');
+window.__results = results;
+</script>
+</body>
+</html>
