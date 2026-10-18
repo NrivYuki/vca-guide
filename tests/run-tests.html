@@ -53,6 +53,13 @@ test('CRC レコードが無いパケットは crcOk = null', () => {
   eq(VCA.parsePacket(VCA.buildPacket([['REQ', 'INI']])).crcOk, null);
 });
 
+test('CRC の値が数字でなければ crcOk = false（CRC なしと区別する）', () => {
+  const pkt = VCA.buildPacket([['REQ', 'TRC']], { crc: true });
+  eq(VCA.parsePacket(pkt.replace(/CRC=\d+/, 'CRC=abc')).crcOk, false, '文字');
+  eq(VCA.parsePacket(pkt.replace(/CRC=\d+/, 'CRC=')).crcOk, false, '空');
+  eq(VCA.parsePacket(pkt.replace(/CRC=(\d+)/, 'CRC=$1x')).crcOk, false, '数字の後に文字');
+});
+
 // ---- レコード --------------------------------------------------------------
 test('左右レコードの取り出し（片眼のみ・単一値・不明値）', () => {
   const d = VCA.parse(['SPH=;-2.75', 'DBL=18.0', 'IPD=?;31.0', 'CYL=-0.50;-0.75'].join(CRLF));
@@ -61,6 +68,14 @@ test('左右レコードの取り出し（片眼のみ・単一値・不明値�
   eq(VCA.sideNumber(d.rec.DBL, 'L'), 18, 'DBL（単一値は両眼）');
   eq(VCA.sideNumber(d.rec.IPD, 'R'), undefined, 'IPD 右（?）');
   eq(VCA.sideNumber(d.rec.CYL, 'L'), -0.75, 'CYL 左');
+});
+
+test('数値の読み取りは厳密（後ろに文字が付いた値は数値として扱わない）', () => {
+  eq(VCA.sideNumber(['12abc'], 'R'), undefined, '12abc');
+  eq(VCA.sideNumber(['1.2.3'], 'R'), undefined, '1.2.3');
+  eq(VCA.sideNumber(['+0.50'], 'R'), 0.5, '+0.50');
+  eq(VCA.sideNumber(['.25'], 'R'), 0.25, '.25');
+  eq(VCA.sideNumber(['-2.'], 'R'), -2, '-2.');
 });
 
 test('"_" で始まるラベル・引用符付きの値・未知のラベル', () => {
@@ -120,6 +135,15 @@ test('左右反転：右眼データの 0°（鼻側）は左眼の向きで 180
   ok(p, '180° に半径 25 mm の点がある');
 });
 
+test('左右反転：0°と180°が入れ替わり、90°・270°は変わらない。点は反時計回りに並ぶ', () => {
+  const d = VCA.parse(['TRCFMT=1;4;E;R;F', 'R=2000;2100;2200;2300'].join(CRLF));
+  const asL = VCA.tracePoints(d.traces[0], 'L');
+  const at = a => asL.find(q => Math.abs(q.a - a) < 1e-9).r;
+  eq([at(0), at(90), at(180), at(270)], [22, 21, 20, 23]);
+  const steps = asL.map((q, i) => (asL[(i + 1) % asL.length].a - q.a + 360) % 360);
+  ok(steps.every(s => s === 90), '隣の点との角度差がすべて +90°');
+});
+
 test('点数の不一致は警告', () => {
   const d = VCA.parse(['TRCFMT=1;10;E;R;F', 'R=' + radii8.join(';')].join(CRLF));
   ok(d.warnings.some(w => w.includes('一致しません')));
@@ -154,6 +178,56 @@ test('形式 2・不等角度：35999 までの角度を扱える', () => {
   const ang = [0, 3000, 9000, 15000, 20000, 25000, 30000, 33000, 35000, 35999];
   const t = VCA.parse(binaryFile(2, tricky, ang, 'U')).traces[0];
   eq(t.angles, ang);
+});
+
+function sagBlock(fmt, values, angles) {
+  let t = `ZFMT=${fmt};${values.length};${angles ? 'U' : 'E'};R;F` + CRLF +
+          'Z=' + VCA.escapeBinary(VCA.encodeBinary(fmt, values)) + CRLF;
+  if (angles) t += 'ZA=' + VCA.escapeBinary(VCA.encodeBinary(fmt, angles)) + CRLF;
+  return t;
+}
+const sagVals = [10, 266, 300, 28, 700, 1200, 13, 400, 410, 395];
+
+test('ZFMT 形式 2・3 のサグを復号する', () => {
+  for (const fmt of [2, 3]) {
+    const d = VCA.parse(binaryFile(fmt, tricky) + sagBlock(fmt, sagVals));
+    eq(d.traces[0].radii, tricky, `形式${fmt} の R`);
+    eq(d.traces[0].sag.values, sagVals, `形式${fmt} の Z`);
+    eq(d.errors, [], `形式${fmt} のエラー`);
+  }
+});
+
+test('ZFMT 形式 2・不等角度の ZA を復号する', () => {
+  const ang = [0, 3000, 9000, 15000, 20000, 25000, 30000, 33000, 35000, 35999];
+  const s = VCA.parse(binaryFile(2, tricky) + sagBlock(2, sagVals, ang)).traces[0].sag;
+  eq(s.angles, ang);
+});
+
+test('ZFMT の点数の不一致は警告、未対応の形式はエラー', () => {
+  const d = VCA.parse(binaryFile(2, tricky) + sagBlock(2, sagVals).replace('ZFMT=2;10', 'ZFMT=2;12'));
+  ok(d.warnings.some(w => w.includes('ZFMT') && w.includes('一致しません')), '点数の警告');
+  const d4 = VCA.parse(binaryFile(2, tricky) + 'ZFMT=4;10;E;R;F' + CRLF + 'Z=\x01\x02' + CRLF);
+  ok(d4.errors.some(e => e.includes('ZFMT 形式4')), '形式 4 のエラー');
+});
+
+test('形式 2 の奇数バイトはエラー（余りを黙って捨てない）', () => {
+  let threw = false;
+  try { VCA.decodeBinary(2, '\x01\x02\x03'); } catch (e) { threw = true; }
+  ok(threw, 'decodeBinary が例外を投げる');
+  const d = VCA.parse('TRCFMT=2;2;E;R;F' + CRLF + 'R=\x01\x02\x03' + CRLF);
+  ok(d.errors.some(e => e.startsWith('R:')), 'parse のエラー');
+  eq(d.traces[0].radii, [], '壊れた値は返さない');
+});
+
+test('形式 3 の途中切れはエラー（先頭 1 バイト、0x80 の後の絶対値が足りない）', () => {
+  for (const s of ['\x01', '\xc4\x09\x01\x80\x10', '\xc4\x09\x80']) {
+    let threw = false;
+    try { VCA.decodeBinary(3, s); } catch (e) { threw = true; }
+    ok(threw, JSON.stringify(s));
+  }
+  eq(VCA.decodeBinary(3, ''), [], '空なら空');
+  const z = VCA.parse(binaryFile(3, tricky) + 'ZFMT=3;3;E;R;F' + CRLF + 'Z=\xc4\x09\x80' + CRLF);
+  ok(z.errors.some(e => e.startsWith('Z:')), 'Z の途中切れも parse のエラー');
 });
 
 test('形式 4（パックト）は未対応としてエラー', () => {

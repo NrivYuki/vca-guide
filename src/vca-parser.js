@@ -64,23 +64,29 @@
   }
 
   // ---- トレースのバイナリ形式（形式 2・3） -------------------------------------
-  // 16 ビット値は下位バイトが先（リトルエンディアン）
+  // 16 ビット値は下位バイトが先（リトルエンディアン）。
+  // データが途中で切れている場合は、壊れた値を返さずに例外を投げる。
   function decodeBinary(fmt, s) {
     const b = i => s.charCodeAt(i) & 0xff, out = [];
     if (fmt === 2) {
-      for (let i = 0; i + 1 < s.length; i += 2) out.push(b(i) | (b(i + 1) << 8));
+      if (s.length % 2) throw new Error(`形式 2 のデータが ${s.length} バイトで、2 バイト単位になっていません`);
+      for (let i = 0; i < s.length; i += 2) out.push(b(i) | (b(i + 1) << 8));
     } else if (fmt === 3) {
       // 先頭は 16 ビットの絶対値。以降は符号付き 1 バイトの差分で、
       // -128（0x80）が来たら次の 2 バイトが絶対値になる。
-      let i = 0, prev = 0;
-      if (s.length >= 2) { prev = b(0) | (b(1) << 8); out.push(prev); i = 2; }
+      if (s.length === 0) return out;
+      if (s.length < 2) throw new Error('形式 3 の先頭の値（2 バイト）が途中で切れています');
+      let i = 2, prev = b(0) | (b(1) << 8);
+      out.push(prev);
       while (i < s.length) {
         let d = b(i++);
-        if (d === 0x80) { if (i + 1 >= s.length) break; prev = b(i) | (b(i + 1) << 8); i += 2; }
-        else { if (d > 127) d -= 256; prev += d; }
+        if (d === 0x80) {
+          if (i + 1 >= s.length) throw new Error('形式 3 の 0x80 に続く絶対値（2 バイト）が途中で切れています');
+          prev = b(i) | (b(i + 1) << 8); i += 2;
+        } else { if (d > 127) d -= 256; prev += d; }
         out.push(prev);
       }
-    }
+    } else throw new Error('decodeBinary: 形式 ' + fmt + ' は未対応です');
     return out;
   }
 
@@ -138,6 +144,7 @@
         if (cur && +fmt !== 0) {
           sag = { fmt: +fmt, n: +n, mode: (mode || 'E').toUpperCase(), eye: (eye || 'R').toUpperCase(),
                   kind: (kind || '').toUpperCase(), values: [], angles: [], raw: { Z: '', ZA: '' } };
+          sag.equi = sag.mode === 'E';
           cur.sag = sag;
         }
         continue;
@@ -159,18 +166,27 @@
       rec[label] = fields;
     }
 
-    // バイナリ形式の復元と検証
-    traces.forEach(t => {
-      if (t.fmt === 2 || t.fmt === 3) {
-        t.radii = decodeBinary(t.fmt, unescapeBinary(t.raw.R));
-        if (!t.equi) t.angles = decodeBinary(t.fmt, unescapeBinary(t.raw.A));
-      } else if (t.fmt !== 1) {
-        errors.push(`TRCFMT 形式${t.fmt} は未対応です（対応: 1, 2, 3）`);
+    // バイナリ形式の復元と検証。玉型（TRCFMT の R・A）とサグ（ZFMT の Z・ZA）を同じ手順で扱う。
+    function finish(d, head, vLabel, aLabel, vKey) {
+      if (d.fmt === 2 || d.fmt === 3) {
+        try { d[vKey] = decodeBinary(d.fmt, unescapeBinary(d.raw[vLabel])); }
+        catch (e) { errors.push(`${vLabel}: ${e.message}（${d.eye}）`); d[vKey] = []; return; }
+        if (!d.equi) {
+          try { d.angles = decodeBinary(d.fmt, unescapeBinary(d.raw[aLabel])); }
+          catch (e) { errors.push(`${aLabel}: ${e.message}（${d.eye}）`); d.angles = []; return; }
+        }
+      } else if (d.fmt !== 1) {
+        errors.push(`${head} 形式${d.fmt} は未対応です（対応: 1, 2, 3）`);
         return;
       }
-      if (t.n && t.radii.length !== t.n) warnings.push(`TRCFMT の点数 ${t.n} と R の個数 ${t.radii.length} が一致しません（${t.eye}）`);
-      if (!t.equi && t.angles.length !== t.radii.length) errors.push(`角度データ A の個数が R と一致しません（${t.eye}）`);
-      if (t.radii.some(v => !Number.isFinite(v))) errors.push(`R に数値以外の値があります（${t.eye}）`);
+      const vals = d[vKey];
+      if (d.n && vals.length !== d.n) warnings.push(`${head} の点数 ${d.n} と ${vLabel} の個数 ${vals.length} が一致しません（${d.eye}）`);
+      if (!d.equi && d.angles.length !== vals.length) errors.push(`角度データ ${aLabel} の個数が ${vLabel} と一致しません（${d.eye}）`);
+      if (vals.some(v => !Number.isFinite(v))) errors.push(`${vLabel} に数値以外の値があります（${d.eye}）`);
+    }
+    traces.forEach(t => {
+      finish(t, 'TRCFMT', 'R', 'A', 'radii');
+      if (t.sag) finish(t.sag, 'ZFMT', 'Z', 'ZA', 'values');
     });
     if (!traces.length && !warnings.length) warnings.push('TRCFMT レコードがありません');
     return { records, rec, traces, errors, warnings };
@@ -187,16 +203,20 @@
     return v === '' || v === '?' || v === undefined ? undefined : v;
   }
 
+  // 10 進の数値だけを受け付ける（"12abc" のように後ろに文字が付いたものは数値として扱わない）
+  const NUMBER_RE = /^[+-]?(\d+\.?\d*|\.\d+)$/;
+
   function sideNumber(fields, eye) {
     const v = sideValue(fields, eye);
-    const n = v === undefined ? NaN : parseFloat(v);
-    return Number.isFinite(n) ? n : undefined;
+    return v !== undefined && NUMBER_RE.test(v) ? Number(v) : undefined;
   }
 
   /**
    * トレースを座標点の列にする（単位 mm、角度は度）。
    * 向きは「検者が装用者を正面から見た状態」。x 右、y 上、0° は 3 時方向、反時計回り。
    * asEye を指定すると、その眼の向きに左右反転して返す。
+   * 反転した点列は角度の小さい順（反時計回り）に並べ直すが、先頭は 0° とは限らない。
+   * 描画や寸法の計算にはそのまま使えるが、R レコードに書き戻すときは 0° から並べ直すこと。
    */
   function tracePoints(trace, asEye) {
     const n = trace.radii.length;
@@ -237,7 +257,12 @@
     return pkt + CH.GS;
   }
 
-  /** パケットを分解して CRC を検証する。CRC レコードが無ければ crcOk は null。 */
+  /**
+   * パケットを分解して CRC を検証する。
+   * crcOk は、CRC レコードが無ければ null（CRC は省略できるため）、
+   * 値が一致すれば true、一致しない・値が数字でない場合は false。
+   * CRC を必須とするかどうかは呼び出し側で判断する。
+   */
   function parsePacket(pkt) {
     const s = pkt.indexOf(CH.FS), e = pkt.lastIndexOf(CH.GS);
     if (s < 0 || e < s) throw new Error('FS と GS で囲まれたパケットが見つかりません');
@@ -245,8 +270,11 @@
     const body = r >= 0 ? inner.slice(0, r) : inner;
     let crcOk = null;
     if (r >= 0) {
-      const m = inner.slice(r + 1).match(/CRC\s*=\s*(\d+)/);
-      if (m) crcOk = crc16(inner.slice(0, r + 1)) === +m[1];
+      const m = inner.slice(r + 1).match(/CRC\s*=([^\r\n]*)/);
+      if (m) {
+        const v = m[1].trim();
+        crcOk = /^\d+$/.test(v) && crc16(inner.slice(0, r + 1)) === +v;
+      }
     }
     return Object.assign(parse(body), { crcOk });
   }
