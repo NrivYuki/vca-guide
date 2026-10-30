@@ -1,0 +1,24 @@
+name: records
+
+# 規格書 PDF(公式サイトで無料公開)から定義表を作り直し、src/vca-records.js と同じになるか確かめる
+on:
+  push:
+    paths:
+      - 'tools/build-records.py'
+      - 'src/vca-records.js'
+      - '.github/workflows/records.yml'
+  workflow_dispatch:
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install -y poppler-utils
+      - run: pip install pdfplumber
+      - run: curl -fsSL -o dcs.pdf https://thevisioncouncil.org/sites/default/files/assets/media/DCS_v3.14_Final.pdf
+      - run: python tools/build-records.py dcs.pdf > src/vca-records.js
+      - run: git diff --stat --exit-code src/vca-records.js

@@ -1,0 +1,16 @@
+{
+  "name": "vca-guide",
+  "version": "0.0.0",
+  "private": true,
+  "description": "VCA通信(OMA / DCS)の日本語解説と JavaScript パーサー",
+  "main": "src/vca-parser.js",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node tests/run-node.js",
+    "mutate": "node tools/mutate.js",
+    "trace": "node tools/trace.js"
+  }
+}

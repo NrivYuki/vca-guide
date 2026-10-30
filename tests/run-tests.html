@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>vca-guide テスト</title>
+<style>
+  :root { --bg:#fff; --ink:#1c2230; --ok:#067647; --ng:#b42318; --muted:#667085; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111418; --ink:#e6e9ef; --ok:#47cd89; --ng:#f97066; --muted:#98a2b3; } }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--ink); font:14px/1.6 system-ui, "Segoe UI", "Yu Gothic UI", sans-serif; }
+  h1 { font-size:18px; margin:0 0 8px; }
+  li { list-style:none; }
+  .ok::before { content:"✓ "; color:var(--ok); font-weight:700; }
+  .ng::before { content:"✗ "; color:var(--ng); font-weight:700; }
+  .ng { color:var(--ng); }
+  #summary { font-weight:700; margin-bottom:8px; }
+  code { color:var(--muted); }
+</style>
+</head>
+<body>
+<h1>vca-parser.js・vca-session.js のテスト</h1>
+<p>このファイルをブラウザで開くとテストが実行されます(Node.js 不要)。</p>
+<div id="summary"></div>
+<ul id="list"></ul>
+<script src="../src/vca-records.js"></script>
+<script src="../src/vca-parser.js"></script>
+<script src="../src/vca-session.js"></script>
+<script src="tests.js"></script>
+<script src="session-tests.js"></script>
+<script>
+// samples/ のファイルと TCP のテストは、ファイルやソケットを使うため Node.js でだけ行う
+window.__done = runSessionTests(VCA, VCA_SESSION).then(session => {
+  const results = runVcaTests(VCA).concat(session);
+  // ---- 表示 ------------------------------------------------------------------
+  const pass = results.filter(r => r.ok).length;
+  document.getElementById('summary').textContent = `${pass} / ${results.length} 件成功`;
+  document.getElementById('list').innerHTML = results.map(r =>
+    `<li class="${r.ok ? 'ok' : 'ng'}">${r.name}${r.ok ? '' : ` <code>${r.msg}</code>`}</li>`).join('');
+  window.__results = results;
+  return results;
+});
+</script>
+</body>
+</html>
