@@ -224,6 +224,15 @@
   // STATUS の 2 番目の欄の説明文(同じ番号でも理由が違うことがあるので、結果に一緒に入れる)
   const statusText = d => { const f = d.rec.STATUS; return f && f[1] !== undefined && f[1] !== '' ? f[1] : undefined; };
   const jobOf = d => VCA.value(d, 'JOB');
+  // データのパケット(ダウンロードの応答・アップロードのデータ)で、中身の無い TRCFMT・ZFMT を警告に足す。
+  // パーサーは中身の無い見出しを対応形式の候補(proposals)とみなすが、データのパケットでは R・Z を見出しの直後に置き
+  // (5.4.5・5.4.6)、玉型・サグが無ければ TRCFMT=0・ZFMT=0 を送る(5.4.1)
+  function checkEmptyDatasets(d) {
+    d.proposals.filter(p => p.label === 'TRCFMT' || p.label === 'ZFMT').forEach(p => {
+      d.warnings.push(`${p.label}=${p.fields.join(';')} のあとに${p.label === 'TRCFMT' ? '玉型' : 'サグ'}のデータがありません。` +
+        `無ければ ${p.label}=0 にします(5.4.1・${p.label === 'TRCFMT' ? '5.4.5' : '5.4.6'})`);
+    });
+  }
 
   const answerType = d => (d.records[0] && d.records[0].label === 'ANS' ? String(d.records[0].fields[0] || '').toUpperCase() : null);
   const OUT_OF_SYNC = 12;   // 表 A.24 の 12(Out of sync)
@@ -397,6 +406,7 @@
         if (kind === 'notify') return { kind, status: 0 };
         const response = await expect(t);
         const jobMissing = checkJob(job, response);
+        if (kind === 'download' && status(response) === 0) checkEmptyDatasets(response);
         if (kind === 'download' || status(response) !== 0) {
           const res = { kind, status: status(response), statusText: statusText(response), response };
           if (jobMissing) res.jobMissing = true;   // JOB の無い断りの応答だった
@@ -585,6 +595,7 @@
       await link.sendPacket(answer(type, job, st, records, res.text));
       if (kind !== 'upload' || st !== 0) return;
       const data = await expectData(type);
+      checkEmptyDatasets(data);
       const fin = await call(opts.onData, [req, data, info]);
       await link.sendPacket(answer(type, job, fin.status !== undefined ? codeOf(fin.status) : 0, fin.records, fin.text));
     }

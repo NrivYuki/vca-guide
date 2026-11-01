@@ -101,6 +101,32 @@
     eq(p.flow(), ['D:REQ=EDG', 'H:ACK', 'H:ANS=EDG', 'D:ACK']);
   });
 
+  test('ダウンロードの応答で TRCFMT・ZFMT のあとにデータが無ければ警告(5.4.5・5.4.6)。TRCFMT=0 なら警告しない', { spec: ['5.4.5-5.4.7', '7.3-7.4'], kind: ['異常', '正常'], req: ['R024', 'R025'] }, async () => {
+    const warned = async records => {
+      const p = pair({}, { onRequest: () => ({ records }) });
+      const r = await settle(p.device.request('EDG', { job: '42' }), p.clock);
+      return r.response.warnings.filter(w => w.includes('のデータがありません'));
+    };
+    eq((await warned([['TRCFMT', '1', '4', 'E', 'R', 'F'], ['HBOX', '50.00']])).length, 1, 'R の無い TRCFMT');
+    eq((await warned(trace.concat([['ZFMT', '1', '4', 'E', 'R', 'F'], ['HBOX', '50.00']]))).length, 1, 'Z の無い ZFMT');
+    eq(await warned([['TRCFMT', '0'], ['HBOX', '50.00']]), [], 'TRCFMT=0');
+    eq(await warned(trace.concat([['HBOX', '50.00']])), [], 'R が続く TRCFMT');
+  });
+
+  test('アップロードのデータで TRCFMT のあとに R が無ければ、ホストが受け取ったデータに警告(5.4.5)', { spec: ['5.4.5-5.4.7', '7.3-7.4'], kind: ['異常'], req: ['R024'] }, async () => {
+    let got = null;
+    const p = pair({}, { onData: (req, data) => { got = data; return { status: 0 }; } });
+    await settle(p.device.request('TRC', { job: '1234', data: [['TRCFMT', '1', '4', 'E', 'R', 'F'], ['HBOX', '50.00']] }), p.clock);
+    ok(got.warnings.some(w => w.includes('玉型のデータがありません')), '警告');
+  });
+
+  test('要求の TRCFMT(求める形式)は、データが無くても警告しない', { spec: ['5.4.1-5.4.3', '7.3-7.4'], kind: ['正常'] }, async () => {
+    let got = null;
+    const p = pair({}, { onRequest: req => { got = req; return { records: trace }; } });
+    await settle(p.device.request('EDG', { job: '42', records: [['TRCFMT', '1', '4', 'E', 'R', 'F']] }), p.clock);
+    eq(got.warnings.filter(w => w.includes('のデータがありません')), [], 'ホストが受け取った要求');
+  });
+
   test('時刻合わせ(TIM、7.4.4)は JOB なし', { spec: ['7.3-7.4'], kind: ['正常'] }, async () => {
     const p = pair({}, { onRequest: () => ({ records: [['TIME', '20070501163330']] }) });
     const r = await settle(p.device.request('TIM'), p.clock);
