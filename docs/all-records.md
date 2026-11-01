@@ -178,7 +178,7 @@ VCA(OMA / DCS)v3.14 の附属書 A に載っている全 496 ラベルの一覧�
 | `CLINIT` |  | text |  | 装用者のイニシャル |
 | `CLLIFE` |  | text |  | 装用者のライフスタイルや趣味 |
 | `CLLNAM` |  | text |  | 装用者が以前使っていたレンズの銘柄や種類 |
-| `CLNVB` |  | text |  | 装用者の近方視の癖(見方) |
+| `CLNVB` |  | text |  | 装用者の近方視の見方(near vision behavior。規格に定義は無い) |
 | `CLZTILT` | ○ | numeric; |  | 装用者で測ったフレームのそり角(度) |
 | `COLR` | △ | text[;] |  | レンズカラーの略号 |
 | `CORRLEN` | △ | numeric[;] |  | 累進帯長の公称値(mm) |

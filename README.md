@@ -445,7 +445,7 @@ const r = await device.request('EDG', { job: '1234' });   // r.response が受�
 
 シリアル接続(RS-232C)の部品はありません。シリアルポートのライブラリの受信を `receive()` に、`send` を書き込みにつなげば同じように使えます。
 
-実際の機器とつながるかは確かめていません。独立した実装との照合として、The Vision Council の DCS Host Simulator(ホスト役)に `createDevice` でつなぎ、初期化・ダウンロード(形式 1・4)・アップロード・TIM・INF などが通ることを確かめています(`tools/sim-check.js`)。照合から対応したことは、Simulator のくせとあわせて [docs/conformance.md](docs/conformance.md#独立した実装との照合dcs-host-simulator) にまとめています。
+実際の機器とつながるかは確かめていません。独立した実装との照合として、The Vision Council の DCS Host Simulator(ホスト役)に `createDevice` でつなぎ、初期化・ダウンロード(形式 1・4)・アップロード・TIM・INF などが通ることを確かめています(`tools/sim-check.js`)。照合から対応したことは、Simulator と規格の不整合とあわせて [docs/conformance.md](docs/conformance.md#独立した実装との照合dcs-host-simulator) にまとめています。
 
 テストは、ブラウザで `tests/run-tests.html` を開くか、Node.js 18 以上で次のコマンドを実行します。依存パッケージは無いので `npm install` は要りません。GitHub では push のたびに Node.js 18・20・22 で自動実行されます。`samples/` のファイルのテスト(警告が無いこと、左右の向き、どのファイルも同じ形であること)と TCP・UDP のテストは、ファイルやソケットを使うため Node.js でだけ行います。
 
