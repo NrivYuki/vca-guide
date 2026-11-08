@@ -26,6 +26,25 @@ module.exports = async function () {
     } finally { if (hostRef) hostRef.socket.destroy(); server.close(); }
   });
 
+  await test('リモート接続のホストは、接続ごとに opts を作れる。null を返した接続はセッションを作らずに切る', { spec: ['7.8.2'], kind: ['正常', '異常'] }, async () => {
+    const peers = [];
+    let n = 0;
+    const server = await T.listenHost(0, socket => {
+      n++;
+      if (n === 2) return null;   // 2 本目の接続は断る
+      const peer = socket.remoteAddress;
+      return { onRequest: () => { peers.push(peer); return { records: [['DO', 'R']] }; } };
+    });
+    try {
+      const a = await T.connectDevice('127.0.0.1', server.address().port, opts);
+      const r = await a.request('EDG', { job: '1' });
+      if (r.status !== 0 || peers.length !== 1 || !/127\.0\.0\.1$/.test(peers[0])) throw new Error('接続ごとの opts が使われない');
+      a.socket.destroy();
+      const b = await T.connectDevice('127.0.0.1', server.address().port, opts);
+      await new Promise((res, rej) => { b.socket.once('close', res); setTimeout(() => rej(new Error('断った接続が切れない')), 2000); });
+    } finally { server.close(); }
+  });
+
   await test('TCP ローカル接続(7.8.2.7.2): ホストがデバイスへつなぎ、デバイスがダウンロード', { spec: ['7.8.2'], kind: ['正常'], req: ['R195', 'R202'] }, async () => {
     let device = null;
     const ready = new Promise(res => { device = res; });
@@ -65,6 +84,23 @@ module.exports = async function () {
       if (first - t0 < 280) throw new Error(`待たずに送った(${first - t0} ms)`);
       device.socket.destroy();
     } finally { if (hostRef) hostRef.socket.destroy(); server.close(); }
+  });
+
+  await test('オートコネクト: connectOpts があれば、つなぐたびにそれで作った opts を使う', { spec: ['7.8.2'], kind: ['正常'] }, async () => {
+    let device = null, seen = null;
+    const ready = new Promise(res => { device = res; });
+    const server = await T.listenDevice(0, opts, d => device(d));
+    const udp = await T.listenAutoconnect(0, {
+      connectOpts: info => ({ onRequest: () => ({ records: [['DO', 'L'], ['MODEL', VCA.value(info.con, 'MODEL')]] }) }),
+    }, () => {});
+    try {
+      await T.announce({ ip: '127.0.0.1', port: server.address().port, dev: 'EDG', ven: 'GC', model: 'LE-9' },
+        { address: '127.0.0.1', port: udp.address().port });
+      const d = await ready;
+      seen = (await d.request('EDG', { job: '5' })).response;
+      if (VCA.value(seen, 'DO') !== 'L' || VCA.value(seen, 'MODEL') !== 'LE-9') throw new Error('connectOpts の opts が使われない');
+      d.socket.destroy();
+    } finally { udp.close(); server.close(); }
   });
 
   await test('オートコネクト: REQ=CON 以外の UDP パケットではつながない', { spec: ['7.8.2', 'U10'], kind: ['異常'] }, async () => {

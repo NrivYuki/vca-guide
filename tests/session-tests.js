@@ -127,6 +127,29 @@
     eq(got.warnings.filter(w => w.includes('のデータがありません')), [], 'ホストが受け取った要求');
   });
 
+  test('ホストの onComplete は、最後のパケットにデバイスが ACK を返したあとに呼ばれる', { spec: ['7.3-7.4'], kind: ['正常'] }, async () => {
+    const done = [];
+    const d = pair({}, { onRequest: () => ({ records: trace }), onComplete: (req, info, r) => { done.push([info.kind, info.job, r.status, d.flow().length]); } });
+    await settle(d.device.request('EDG', { job: '42' }), d.clock);
+    eq(done, [['download', '42', 0, 4]], 'ダウンロード: データへの ACK(4 番目)のあと');
+    const u = pair({}, { onData: () => ({ status: 0 }), onComplete: (req, info, r) => { done.push([info.kind, r.status, u.flow().length]); } });
+    await settle(u.device.request('TRC', { job: '1234', data: trace }), u.clock);
+    eq(done[1], ['upload', 0, 8], 'アップロード: 最後の応答への ACK(8 番目)のあと');
+    const n = pair({}, { onRequest: () => ({ status: 1 }), onComplete: (req, info, r) => { done.push(['refused', r.status]); } });
+    await settle(n.device.request('EDG', { job: '42' }), n.clock);
+    eq(done[2], ['refused', 1], '断りの応答も、ACK のあとに STATUS を渡す');
+  });
+
+  test('ホストの onComplete は、デバイスが最後のパケットに ACK を返さなければ呼ばれない', { spec: ['7.3-7.4', '6.1.3'], kind: ['異常'] }, async () => {
+    let called = false;
+    const p = pair({}, { onRequest: () => ({ records: trace }), onComplete: () => { called = true; } });
+    p.wire.toHost = s => (s === ACK ? null : s);   // デバイスの ACK が届かない
+    p.device.request('EDG', { job: '42' }).catch(() => {});
+    await p.clock.advance(30);
+    ok(!called, 'onComplete が呼ばれた');
+    ok(p.errors.some(e => e.code === 'ack-timeout'), 'onError に確認応答の時間切れ');
+  });
+
   test('時刻合わせ(TIM、7.4.4)は JOB なし', { spec: ['7.3-7.4'], kind: ['正常'] }, async () => {
     const p = pair({}, { onRequest: () => ({ records: [['TIME', '20070501163330']] }) });
     const r = await settle(p.device.request('TIM'), p.clock);

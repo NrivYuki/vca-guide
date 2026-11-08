@@ -468,6 +468,9 @@
    *                           status に 'unsupportedRequest' など STATUS_CODES の名前を書いてもよい
    *   onData(req, data, info): アップロードのデータを受け取ったとき。{ status, text, records } を返す
    *   onNotify(req):          INF・MNT を受け取ったとき
+   *   onComplete(req, info, result): 要求のセッション(アップロード・ダウンロード)を終えたとき。ホストの最後のパケット
+   *                           (ダウンロードならデータ、アップロードなら最後の応答)にデバイスが ACK を返したあとに呼ぶ。
+   *                           result.status はそのパケットで返した STATUS。送れなかったときは呼ばない(失敗は onError へ)
    *   onError(err):           セッションの失敗と、応答の関数が投げた例外
    * }
    * 応答の関数は Promise を返してもよい。例外を投げると STATUS=8(ホストの内部エラー)と例外の文を返す。
@@ -593,12 +596,17 @@
       // DRLFMT を取り決めた要求 ID には、廃止された DRILL を送らない(ラベル一覧にあっても無視する、5.5.1.5)
       const records = numeric && requestIds[type].drill && res.records ? res.records.filter(r => String(r[0]).toUpperCase() !== 'DRILL') : res.records;
       await link.sendPacket(answer(type, job, st, records, res.text));
-      if (kind !== 'upload' || st !== 0) return;
+      if (kind !== 'upload' || st !== 0) return complete(req, info, st);
       const data = await expectData(type);
       checkEmptyDatasets(data);
       const fin = await call(opts.onData, [req, data, info]);
-      await link.sendPacket(answer(type, job, fin.status !== undefined ? codeOf(fin.status) : 0, fin.records, fin.text));
+      const fst = fin.status !== undefined ? codeOf(fin.status) : 0;
+      await link.sendPacket(answer(type, job, fst, fin.records, fin.text));
+      return complete(req, info, fst);
     }
+
+    // 最後のパケットに ACK を受け取った(sendPacket が終わった)あとに呼ぶ
+    async function complete(req, info, st) { await call(opts.onComplete, [req, info, { status: st }]); }
 
     // 要求を待ち続ける(待つあいだはタイムアウトなし)
     (async () => {

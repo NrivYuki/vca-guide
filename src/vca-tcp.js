@@ -59,10 +59,16 @@ function connectHost(address, port, opts) {
   });
 }
 
-/** リモート接続: ホストが待ち受ける(既定 33512)。デバイスがつなぐたびに onHost(host) を呼ぶ */
+/**
+ * リモート接続: ホストが待ち受ける(既定 33512)。デバイスがつなぐたびに onHost(host) を呼ぶ。
+ * opts に関数を渡すと、接続のたびに opts(socket) で、その接続の opts を作る(相手ごとに応答や記録を分けるため)。
+ * 関数が null を返したら、セッションを作らずに接続を切る(つないでよい相手を利用者が決める)。
+ */
 function listenHost(port, opts, onHost) {
   const server = net.createServer(socket => {
-    const host = attach(socket, createHost, opts || {});
+    const o = typeof opts === 'function' ? opts(socket) : (opts || {});
+    if (!o) { socket.destroy(); return; }
+    const host = attach(socket, createHost, o);
     if (onHost) onHost(host);
   });
   return new Promise((resolve, reject) => {
@@ -99,6 +105,8 @@ function announce(info, to) {
  *   opts.allow({ ip, port, from, con }) が false を返した(つないでよいネットワークを利用者が決める)
  *   同じ IP とポートに、すでにつないでいる(繰り返し届く知らせで接続を増やさない)
  * つながなかったときは opts.onIgnore(理由, { ip, port, from }) を呼ぶ。
+ * opts.connectOpts({ ip, port, from, con }) があれば、つなぐたびに、それが返したものを connectHost の opts にする
+ * (相手ごとに応答や記録を分けるため)。無ければ opts をそのまま使う。
  */
 function listenAutoconnect(port, opts, onHost) {
   const o = opts || {};
@@ -121,7 +129,7 @@ function listenAutoconnect(port, opts, onHost) {
     if (active.has(key)) return ignore('すでにつないでいます', info);
     active.add(key);
     try {
-      const host = await connectHost(ip, p, o);
+      const host = await connectHost(ip, p, o.connectOpts ? o.connectOpts({ ip, port: p, from, con }) : o);
       host.socket.once('close', () => active.delete(key));
       if (onHost) onHost(host, con);
     } catch (e) { active.delete(key); if (o.onError) o.onError(e); }
